@@ -33,11 +33,20 @@ WINE_DEFAULT_DEBUG_CHANNEL(wow);
 #include "pshpack1.h"
 struct thunk_32to64
 {
-    BYTE  ljmp;   /* jump far, absolute indirect */
+    BYTE  lcall;   /* call far, absolute indirect */
     BYTE  modrm;  /* address=disp32, opcode=5 */
     DWORD op;
     DWORD addr;
     WORD  cs;
+
+    BYTE add;
+    BYTE add_modrm;
+    BYTE add_op;
+
+    BYTE jmp;
+    BYTE jmp_modrm;
+    DWORD jmp_op;
+    DWORD jmp_addr;
 };
 struct thunk_opcodes
 {
@@ -309,21 +318,48 @@ NTSTATUS WINAPI BTCpuProcessInit(void)
     ds64_sel = context.SegDs;
     fs32_sel = context.SegFs;
 
-    thunk->syscall_thunk.ljmp  = 0xff;
-    thunk->syscall_thunk.modrm = 0x2d;
+    /* CW HACK 20760:
+     * Use lcall rather than ljmp to work around a Rosetta SIGUSR1 race condition.
+     */
+    thunk->syscall_thunk.lcall  = 0xff;
+    thunk->syscall_thunk.modrm = 0x1d;
     thunk->syscall_thunk.op    = PtrToUlong( &thunk->syscall_thunk.addr );
-    thunk->syscall_thunk.addr  = PtrToUlong( syscall_32to64 );
+    thunk->syscall_thunk.addr  = PtrToUlong( &thunk->syscall_thunk.add );
     thunk->syscall_thunk.cs    = cs64_sel;
+
+    /* We are now in 64-bit. */
+    /* add $0x08,%esp to remove the addr/segment pushed on the stack by the lcall */
+    thunk->syscall_thunk.add = 0x83;
+    thunk->syscall_thunk.add_modrm = 0xc4;
+    thunk->syscall_thunk.add_op = 0x08;
+
+    /* jmp to syscall_32to64 */
+    thunk->syscall_thunk.jmp = 0xff;
+    thunk->syscall_thunk.jmp_modrm = 0x25;
+    thunk->syscall_thunk.jmp_op = 0x00;
+    thunk->syscall_thunk.jmp_addr = PtrToUlong( syscall_32to64 );
 
     thunk->unix_thunk.pushl   = 0x68;
     thunk->unix_thunk.dispatcher_high = (ULONG_PTR)*p__wine_unix_call_dispatcher >> 32;
     thunk->unix_thunk.pushl2  = 0x68;
     thunk->unix_thunk.dispatcher_low = (ULONG_PTR)*p__wine_unix_call_dispatcher;
-    thunk->unix_thunk.t.ljmp  = 0xff;
-    thunk->unix_thunk.t.modrm = 0x2d;
+    thunk->unix_thunk.t.lcall  = 0xff;
+    thunk->unix_thunk.t.modrm = 0x1d;
     thunk->unix_thunk.t.op    = PtrToUlong( &thunk->unix_thunk.t.addr );
-    thunk->unix_thunk.t.addr  = PtrToUlong( unix_call_32to64 );
+    thunk->unix_thunk.t.addr  = PtrToUlong( &thunk->unix_thunk.t.add );
     thunk->unix_thunk.t.cs    = cs64_sel;
+
+    /* We are now in 64-bit. */
+    /* add $0x08,%esp to remove the addr/segment pushed on the stack by the lcall */
+    thunk->unix_thunk.t.add = 0x83;
+    thunk->unix_thunk.t.add_modrm = 0xc4;
+    thunk->unix_thunk.t.add_op = 0x08;
+
+    /* jmp to unix_call_32to64 */
+    thunk->unix_thunk.t.jmp = 0xff;
+    thunk->unix_thunk.t.jmp_modrm = 0x25;
+    thunk->unix_thunk.t.jmp_op = 0x00;
+    thunk->unix_thunk.t.jmp_addr = PtrToUlong( unix_call_32to64 );
 
     NtProtectVirtualMemory( GetCurrentProcess(), (void **)&thunk, &size, PAGE_EXECUTE_READ, &old_prot );
     return STATUS_SUCCESS;
