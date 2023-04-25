@@ -2351,10 +2351,11 @@ void macdrv_window_got_focus(HWND hwnd, const macdrv_event *event)
     {
         /* simulate a mouse click on the menu to find out
          * whether the window wants to be activated */
-        LRESULT ma = send_message(hwnd, WM_MOUSEACTIVATE,
-                                  (WPARAM)NtUserGetAncestor(hwnd, GA_ROOT),
-                                  MAKELONG(HTMENU, WM_LBUTTONDOWN));
-        if (ma != MA_NOACTIVATEANDEAT && ma != MA_NOACTIVATE)
+        // LRESULT ma = send_message(hwnd, WM_MOUSEACTIVATE,
+        //                           (WPARAM)NtUserGetAncestor(hwnd, GA_ROOT),
+        //                           MAKELONG(HTMENU, WM_LBUTTONDOWN));
+        // if (ma != MA_NOACTIVATEANDEAT && ma != MA_NOACTIVATE)
+        /* CrossOver Hack #18896: don't send WM_MOUSEACTIVATE, it breaks Unity games */
         {
             TRACE("setting foreground window to %p\n", hwnd);
             NtUserSetForegroundWindow(hwnd);
