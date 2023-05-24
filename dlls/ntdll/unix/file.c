@@ -1292,18 +1292,22 @@ static BOOLEAN get_dir_case_sensitivity( const char *dir )
 /***********************************************************************
  *           is_hidden_file
  *
- * Check if the specified file should be hidden based on its name and the show dot files option.
+ * Check if the specified file should be hidden based on its unix path and the show dot files option.
  */
-static BOOL is_hidden_file( const UNICODE_STRING *name )
+static BOOL is_hidden_file( const char *name )
 {
-    WCHAR *p, *end;
+    const char *p;
 
     if (show_dot_files) return FALSE;
 
-    end = p = name->Buffer + name->Length/sizeof(WCHAR);
-    while (p > name->Buffer && p[-1] == '\\') p--;
-    while (p > name->Buffer && p[-1] != '\\') p--;
-    return (p < end && *p == '.');
+    p = name + strlen( name );
+    while (p > name && p[-1] == '/') p--;
+    while (p > name && p[-1] != '/') p--;
+    if (*p++ != '.') return FALSE;
+    if (!*p || *p == '/') return FALSE;  /* "." directory */
+    if (*p++ != '.') return TRUE;
+    if (!*p || *p == '/') return FALSE;  /* ".." directory */
+    return TRUE;
 }
 
 
@@ -1600,11 +1604,11 @@ static int fd_get_file_info( int fd, unsigned int options, struct stat *st, ULON
 }
 
 
-static int fd_set_dos_attrib( int fd, UINT attr )
+static int fd_set_dos_attrib( int fd, UINT attr, BOOL force_set )
 {
     /* we only store the HIDDEN and SYSTEM attributes */
     attr &= XATTR_ATTRIBS_MASK;
-    if (attr != 0)
+    if (force_set || attr != 0)
     {
         /* encode the attributes in Samba 3 ASCII format. Samba 4 has extended
          * this format with more features, but retains compatibility with the
@@ -1618,7 +1622,7 @@ static int fd_set_dos_attrib( int fd, UINT attr )
 
 
 /* set the stat info and file attributes for a file (by file descriptor) */
-static NTSTATUS fd_set_file_info( int fd, UINT attr )
+static NTSTATUS fd_set_file_info( int fd, UINT attr, BOOL force_set_xattr )
 {
     struct stat st;
 
@@ -1637,7 +1641,11 @@ static NTSTATUS fd_set_file_info( int fd, UINT attr )
     }
     if (fchmod( fd, st.st_mode ) == -1) return errno_to_status( errno );
 
-    if (fd_set_dos_attrib( fd, attr ) == -1 && errno != ENOTSUP)
+    /* if the file has multiple names, we can't be sure that it is safe to not
+       set the extended attribute, since any of the names could start with a dot */
+    force_set_xattr = force_set_xattr || st.st_nlink > 1;
+
+    if (fd_set_dos_attrib( fd, attr, force_set_xattr ) == -1 && errno != ENOTSUP)
         WARN( "Failed to set extended attribute " SAMBA_XATTR_DOS_ATTRIB ". errno %d (%s)\n",
               errno, strerror( errno ) );
 
@@ -1682,6 +1690,8 @@ static int get_file_info( const char *path, struct stat *st, ULONG *attr )
         *attr |= parse_samba_dos_attrib_data( attr_data, attr_len );
     else
     {
+        if (is_hidden_file( path ))
+            *attr |= FILE_ATTRIBUTE_HIDDEN;
         if (errno == ENOTSUP) return ret;
 #ifdef ENODATA
         if (errno == ENODATA) return ret;
@@ -2252,11 +2262,6 @@ static NTSTATUS get_dir_data_entry( struct dir_data *dir_data, void *info_ptr, I
     if (class != FileNamesInformation)
     {
         if (st.st_dev != dir_data->id.dev) st.st_ino = 0;  /* ignore inode if on a different device */
-
-        if (!show_dot_files && names->long_name[0] == '.' && names->long_name[1] &&
-            (names->long_name[1] != '.' || names->long_name[2]))
-            attributes |= FILE_ATTRIBUTE_HIDDEN;
-
         fill_file_info( &st, attributes, info, class );
     }
 
@@ -3966,6 +3971,7 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
     OBJECT_ATTRIBUTES new_attr;
     UNICODE_STRING nt_name;
     char *unix_name;
+    BOOL name_hidden = FALSE;
     BOOL created = FALSE;
     unsigned int status;
 
@@ -4008,6 +4014,7 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
 
     if (status == STATUS_SUCCESS)
     {
+        name_hidden = is_hidden_file( unix_name );
         status = open_unix_file( handle, unix_name, access, &new_attr, attributes,
                                  sharing, disposition, options, ea_buffer, ea_length );
         free( unix_name );
@@ -4035,14 +4042,15 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
             break;
         }
 
-        if (io->Information == FILE_CREATED && (attributes & XATTR_ATTRIBS_MASK))
+        if (io->Information == FILE_CREATED &&
+            ((attributes & XATTR_ATTRIBS_MASK) || name_hidden))
         {
             int fd, needs_close;
 
             /* set any DOS extended attributes */
             if (!server_get_unix_fd( *handle, 0, &fd, &needs_close, NULL, NULL ))
             {
-                if (fd_set_dos_attrib( fd, attributes ) == -1 && errno != ENOTSUP)
+                if (fd_set_dos_attrib( fd, attributes, TRUE ) == -1 && errno != ENOTSUP)
                     WARN( "Failed to set extended attribute " SAMBA_XATTR_DOS_ATTRIB ". errno %d (%s)",
                           errno, strerror( errno ) );
                 if (needs_close) close( fd );
@@ -4218,7 +4226,6 @@ NTSTATUS WINAPI NtQueryFullAttributesFile( const OBJECT_ATTRIBUTES *attr,
             info->AllocationSize = std.AllocationSize;
             info->EndOfFile      = std.EndOfFile;
             info->FileAttributes = basic.FileAttributes;
-            if (is_hidden_file( attr->ObjectName )) info->FileAttributes |= FILE_ATTRIBUTE_HIDDEN;
         }
         free( unix_name );
     }
@@ -4249,10 +4256,7 @@ NTSTATUS WINAPI NtQueryAttributesFile( const OBJECT_ATTRIBUTES *attr, FILE_BASIC
         else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
             status = STATUS_INVALID_INFO_CLASS;
         else
-        {
             status = fill_file_info( &st, attributes, info, FileBasicInformation );
-            if (is_hidden_file( attr->ObjectName )) info->FileAttributes |= FILE_ATTRIBUTE_HIDDEN;
-        }
         free( unix_name );
     }
     else WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
@@ -4568,9 +4572,12 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
         {
             const FILE_BASIC_INFORMATION *info = ptr;
             LARGE_INTEGER mtime, atime;
+            char *unix_name;
 
             if ((status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, NULL )))
                 return io->u.Status = status;
+
+            if (server_get_unix_name( handle, &unix_name )) unix_name = NULL;
 
             mtime.QuadPart = info->LastWriteTime.QuadPart == -1 ? 0 : info->LastWriteTime.QuadPart;
             atime.QuadPart = info->LastAccessTime.QuadPart == -1 ? 0 : info->LastAccessTime.QuadPart;
@@ -4578,10 +4585,12 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
             if (atime.QuadPart || mtime.QuadPart)
                 status = set_file_times( fd, &mtime, &atime );
 
-            if (status == STATUS_SUCCESS && info->FileAttributes)
-                status = fd_set_file_info( fd, info->FileAttributes );
+            if (status == STATUS_SUCCESS)
+                status = fd_set_file_info( fd, info->FileAttributes,
+                                           unix_name && is_hidden_file( unix_name ));
 
             if (needs_close) close( fd );
+            free( unix_name );
         }
         else status = STATUS_INVALID_PARAMETER_3;
         break;

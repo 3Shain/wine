@@ -26,12 +26,32 @@
 
 #include "config.h"
 
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
 #include "macdrv.h"
 #include "oleidl.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(event);
 WINE_DECLARE_DEBUG_CHANNEL(imm);
 
+/* IME works synchronously, key input is passed from ImeProcessKey, to the
+ * host IME. We wait for it to be handled, or not, which is notified using
+ * the sent_text_input event. Meanwhile, while processing the key, the host
+ * IME may send one or more im_set_text events to update the input text.
+ *
+ * If ImeProcessKey returns TRUE, ImeToAsciiEx is then be called to retrieve
+ * the composition string updates. We use ime_update.comp_str != NULL as flag that
+ * composition is started, even if the preedit text is empty.
+ *
+ * If ImeProcessKey returns FALSE, ImeToAsciiEx will not be called.
+ */
+struct ime_update
+{
+    DWORD cursor_pos;
+    WCHAR *comp_str;
+    WCHAR *result_str;
+};
+static struct ime_update ime_update;
 
 /* return the name of an Mac event */
 static const char *dbgstr_event(int type)
@@ -60,6 +80,7 @@ static const char *dbgstr_event(int type)
         "STATUS_ITEM_MOUSE_MOVE",
         "WINDOW_BROUGHT_FORWARD",
         "WINDOW_CLOSE_REQUESTED",
+        "WINDOW_DID_MINIMIZE",
         "WINDOW_DID_UNMINIMIZE",
         "WINDOW_DRAG_BEGIN",
         "WINDOW_DRAG_END",
@@ -71,6 +92,7 @@ static const char *dbgstr_event(int type)
         "WINDOW_RESIZE_ENDED",
         "WINDOW_RESTORE_REQUESTED",
     };
+    C_ASSERT(ARRAYSIZE(event_names) == NUM_EVENT_TYPES);
 
     if (0 <= type && type < NUM_EVENT_TYPES) return event_names[type];
     return wine_dbg_sprintf("Unknown event %d", type);
@@ -151,26 +173,35 @@ static macdrv_event_mask get_event_mask(DWORD mask)
 static void macdrv_im_set_text(const macdrv_event *event)
 {
     HWND hwnd = macdrv_get_window_hwnd(event->window);
-    struct ime_set_text_params *params;
-    CFIndex length = 0, size;
+    CFIndex length = 0;
+    WCHAR *text = NULL;
 
     TRACE_(imm)("win %p/%p himc %p text %s complete %u\n", hwnd, event->window, event->im_set_text.himc,
                 debugstr_cf(event->im_set_text.text), event->im_set_text.complete);
 
     if (event->im_set_text.text)
+    {
         length = CFStringGetLength(event->im_set_text.text);
+        if (!(text = malloc((length + 1) * sizeof(WCHAR)))) return;
+        if (length) CFStringGetCharacters(event->im_set_text.text, CFRangeMake(0, length), text);
+        text[length] = 0;
+    }
 
-    size = offsetof(struct ime_set_text_params, text[length]);
-    if (!(params = malloc(size))) return;
-    params->hwnd = HandleToUlong(hwnd);
-    params->himc = (UINT_PTR)event->im_set_text.himc;
-    params->cursor_pos = event->im_set_text.cursor_pos;
-    params->complete = event->im_set_text.complete;
+    /* discard any pending comp text */
+    free(ime_update.comp_str);
+    ime_update.comp_str = NULL;
+    ime_update.cursor_pos = -1;
 
-    if (length)
-        CFStringGetCharacters(event->im_set_text.text, CFRangeMake(0, length), params->text);
-
-    macdrv_client_func(client_func_ime_set_text, params, size);
+    if (event->im_set_text.complete)
+    {
+        free(ime_update.result_str);
+        ime_update.result_str = text;
+    }
+    else
+    {
+        ime_update.comp_str = text;
+        ime_update.cursor_pos = event->im_set_text.cursor_pos;
+    }
 }
 
 /***********************************************************************
@@ -179,7 +210,90 @@ static void macdrv_im_set_text(const macdrv_event *event)
 static void macdrv_sent_text_input(const macdrv_event *event)
 {
     TRACE_(imm)("handled: %s\n", event->sent_text_input.handled ? "TRUE" : "FALSE");
-    *event->sent_text_input.done = event->sent_text_input.handled ? 1 : -1;
+    *event->sent_text_input.done = event->sent_text_input.handled || ime_update.result_str ? 1 : -1;
+}
+
+
+/***********************************************************************
+ *              ImeToAsciiEx (MACDRV.@)
+ */
+UINT macdrv_ImeToAsciiEx(UINT vkey, UINT vsc, const BYTE *state, COMPOSITIONSTRING *compstr, HIMC himc)
+{
+    UINT needed = sizeof(COMPOSITIONSTRING), comp_len, result_len;
+    struct ime_update *update = &ime_update;
+    void *dst;
+
+    TRACE_(imm)("vkey %#x, vsc %#x, state %p, compstr %p, himc %p\n", vkey, vsc, state, compstr, himc);
+
+    if (!update->comp_str) comp_len = 0;
+    else
+    {
+        comp_len = wcslen(update->comp_str);
+        needed += comp_len * sizeof(WCHAR); /* GCS_COMPSTR */
+        needed += comp_len; /* GCS_COMPATTR */
+        needed += 2 * sizeof(DWORD); /* GCS_COMPCLAUSE */
+    }
+
+    if (!update->result_str) result_len = 0;
+    else
+    {
+        result_len = wcslen(update->result_str);
+        needed += result_len * sizeof(WCHAR); /* GCS_RESULTSTR */
+        needed += 2 * sizeof(DWORD); /* GCS_RESULTCLAUSE */
+    }
+
+    if (compstr->dwSize < needed)
+    {
+        compstr->dwSize = needed;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    memset( compstr, 0, sizeof(*compstr) );
+    compstr->dwSize = sizeof(*compstr);
+
+    if (update->comp_str)
+    {
+        compstr->dwCursorPos = update->cursor_pos;
+
+        compstr->dwCompStrLen = comp_len;
+        compstr->dwCompStrOffset = compstr->dwSize;
+        dst = (BYTE *)compstr + compstr->dwCompStrOffset;
+        memcpy(dst, update->comp_str, compstr->dwCompStrLen * sizeof(WCHAR));
+        compstr->dwSize += compstr->dwCompStrLen * sizeof(WCHAR);
+
+        compstr->dwCompClauseLen = 2 * sizeof(DWORD);
+        compstr->dwCompClauseOffset = compstr->dwSize;
+        dst = (BYTE *)compstr + compstr->dwCompClauseOffset;
+        *((DWORD *)dst + 0) = 0;
+        *((DWORD *)dst + 1) = compstr->dwCompStrLen;
+        compstr->dwSize += compstr->dwCompClauseLen;
+
+        compstr->dwCompAttrLen = compstr->dwCompStrLen;
+        compstr->dwCompAttrOffset = compstr->dwSize;
+        dst = (BYTE *)compstr + compstr->dwCompAttrOffset;
+        memset(dst, ATTR_INPUT, compstr->dwCompAttrLen);
+        compstr->dwSize += compstr->dwCompAttrLen;
+    }
+
+    if (update->result_str)
+    {
+        compstr->dwResultStrLen = result_len;
+        compstr->dwResultStrOffset = compstr->dwSize;
+        dst = (BYTE *)compstr + compstr->dwResultStrOffset;
+        memcpy(dst, update->result_str, compstr->dwResultStrLen * sizeof(WCHAR));
+        compstr->dwSize += compstr->dwResultStrLen * sizeof(WCHAR);
+
+        compstr->dwResultClauseLen = 2 * sizeof(DWORD);
+        compstr->dwResultClauseOffset = compstr->dwSize;
+        dst = (BYTE *)compstr + compstr->dwResultClauseOffset;
+        *((DWORD *)dst + 0) = 0;
+        *((DWORD *)dst + 1) = compstr->dwResultStrLen;
+        compstr->dwSize += compstr->dwResultClauseLen;
+    }
+
+    free(update->result_str);
+    update->result_str = NULL;
+    return 0;
 }
 
 
@@ -289,27 +403,33 @@ BOOL query_ime_char_rect(macdrv_query* query)
     HWND hwnd = macdrv_get_window_hwnd(query->window);
     void *himc = query->ime_char_rect.himc;
     CFRange *range = &query->ime_char_rect.range;
-    CGRect *rect = &query->ime_char_rect.rect;
-    struct ime_query_char_rect_result result = { .location = 0 };
-    struct ime_query_char_rect_params params;
-    BOOL ret;
+    GUITHREADINFO info = {.cbSize = sizeof(info)};
+    BOOL ret = FALSE;
 
     TRACE_(imm)("win %p/%p himc %p range %ld-%ld\n", hwnd, query->window, himc, range->location,
                 range->length);
 
-    params.hwnd = HandleToUlong(hwnd);
-    params.himc = (UINT_PTR)himc;
-    params.result = (UINT_PTR)&result;
-    params.location = range->location;
-    params.length = range->length;
-    ret = macdrv_client_func(client_func_ime_query_char_rect, &params, sizeof(params));
-    *range = CFRangeMake(result.location, result.length);
-    *rect = cgrect_from_rect(result.rect);
+    if (NtUserGetGUIThreadInfo(0, &info))
+    {
+        NtUserMapWindowPoints(info.hwndCaret, 0, (POINT*)&info.rcCaret, 2);
+        if (range->length && info.rcCaret.left == info.rcCaret.right) info.rcCaret.right++;
+        query->ime_char_rect.rect = cgrect_from_rect(info.rcCaret);
+    }
 
     TRACE_(imm)(" -> %s range %ld-%ld rect %s\n", ret ? "TRUE" : "FALSE", range->location,
-                range->length, wine_dbgstr_cgrect(*rect));
+                range->length, wine_dbgstr_cgrect(query->ime_char_rect.rect));
 
     return ret;
+}
+
+
+/***********************************************************************
+ *      NotifyIMEStatus (X11DRV.@)
+ */
+void macdrv_NotifyIMEStatus( HWND hwnd, UINT status )
+{
+    TRACE_(imm)( "hwnd %p, status %#x\n", hwnd, status );
+    if (!status) macdrv_clear_ime_text();
 }
 
 

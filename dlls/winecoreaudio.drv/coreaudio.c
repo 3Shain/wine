@@ -100,6 +100,9 @@ struct coreaudio_stream
     BYTE *local_buffer, *cap_buffer, *wrap_buffer, *resamp_buffer, *tmp_buffer;
 };
 
+static const REFERENCE_TIME def_period = 100000;
+static const REFERENCE_TIME min_period = 50000;
+
 static NTSTATUS unix_not_implemented(void *args)
 {
     return STATUS_SUCCESS;
@@ -1087,6 +1090,20 @@ unsupported:
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS unix_get_device_period(void *args)
+{
+    struct get_device_period_params *params = args;
+
+    if (params->def_period)
+        *params->def_period = def_period;
+    if (params->min_period)
+        *params->min_period = min_period;
+
+    params->result = S_OK;
+
+    return STATUS_SUCCESS;
+}
+
 static UINT buf_ptr_diff(UINT left, UINT right, UINT bufsize)
 {
     if(left <= right)
@@ -1616,6 +1633,12 @@ static NTSTATUS unix_get_position(void *args)
     struct coreaudio_stream *stream = handle_get_stream(params->stream);
     LARGE_INTEGER stamp, freq;
 
+    if (params->device) {
+        FIXME("Device position reporting not implemented\n");
+        params->result = E_NOTIMPL;
+        return STATUS_SUCCESS;
+    }
+
     OSSpinLockLock(&stream->lock);
 
     *params->pos = stream->written_frames - stream->held_frames;
@@ -1665,28 +1688,31 @@ static NTSTATUS unix_set_volumes(void *args)
 {
     struct set_volumes_params *params = args;
     struct coreaudio_stream *stream = handle_get_stream(params->stream);
-    Float32 level = 1.0, tmp;
+    Float32 level = params->master_volume;
     OSStatus sc;
     UINT32 i;
+    AudioObjectPropertyAddress prop_addr = {
+        kAudioDevicePropertyVolumeScalar,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMaster
+    };
 
-    if(params->channel >= stream->fmt->nChannels || params->channel < -1){
-        ERR("Incorrect channel %d\n", params->channel);
-        return STATUS_SUCCESS;
-    }
+    sc = AudioObjectSetPropertyData(stream->dev_id, &prop_addr, 0, NULL, sizeof(float), &level);
+    if (sc == noErr)
+        level = 1.0f;
+    else
+        WARN("Couldn't set master volume, applying it directly to the channels: %x\n", (int)sc);
 
-    if(params->channel == -1){
-        for(i = 0; i < stream->fmt->nChannels; ++i){
-            tmp = params->master_volume * params->volumes[i] * params->session_volumes[i];
-            level = tmp < level ? tmp : level;
+    for (i = 1; i <= stream->fmt->nChannels; ++i) {
+        const float vol = level * params->session_volumes[i - 1] * params->volumes[i - 1];
+
+        prop_addr.mElement = i;
+
+        sc = AudioObjectSetPropertyData(stream->dev_id, &prop_addr, 0, NULL, sizeof(float), &vol);
+        if (sc != noErr) {
+            WARN("Couldn't set channel #%u volume: %x\n", i, (int)sc);
         }
-    }else
-        level = params->master_volume * params->volumes[params->channel] *
-            params->session_volumes[params->channel];
-
-    sc = AudioUnitSetParameter(stream->unit, kHALOutputParam_Volume,
-                               kAudioUnitScope_Global, 0, level, 0);
-    if(sc != noErr)
-        WARN("Couldn't set volume: %x\n", (int)sc);
+    }
 
     return STATUS_SUCCESS;
 }
@@ -1730,7 +1756,7 @@ unixlib_entry_t __wine_unix_call_funcs[] =
     unix_release_capture_buffer,
     unix_is_format_supported,
     unix_get_mix_format,
-    unix_not_implemented,
+    unix_get_device_period,
     unix_get_buffer_size,
     unix_get_latency,
     unix_get_current_padding,
@@ -1925,6 +1951,28 @@ static NTSTATUS unix_wow64_get_mix_format(void *args)
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS unix_wow64_get_device_period(void *args)
+{
+    struct
+    {
+        PTR32 device;
+        EDataFlow flow;
+        HRESULT result;
+        PTR32 def_period;
+        PTR32 min_period;
+    } *params32 = args;
+    struct get_device_period_params params =
+    {
+        .device = ULongToPtr(params32->device),
+        .flow = params32->flow,
+        .def_period = ULongToPtr(params32->def_period),
+        .min_period = ULongToPtr(params32->min_period),
+    };
+    unix_get_device_period(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS unix_wow64_get_buffer_size(void *args)
 {
     struct
@@ -2043,7 +2091,6 @@ static NTSTATUS unix_wow64_set_volumes(void *args)
         float master_volume;
         PTR32 volumes;
         PTR32 session_volumes;
-        int channel;
     } *params32 = args;
     struct set_volumes_params params =
     {
@@ -2051,7 +2098,6 @@ static NTSTATUS unix_wow64_set_volumes(void *args)
         .master_volume = params32->master_volume,
         .volumes = ULongToPtr(params32->volumes),
         .session_volumes = ULongToPtr(params32->session_volumes),
-        .channel = params32->channel
     };
     return unix_set_volumes(&params);
 }
@@ -2092,7 +2138,7 @@ unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     unix_release_capture_buffer,
     unix_wow64_is_format_supported,
     unix_wow64_get_mix_format,
-    unix_not_implemented,
+    unix_wow64_get_device_period,
     unix_wow64_get_buffer_size,
     unix_wow64_get_latency,
     unix_wow64_get_current_padding,

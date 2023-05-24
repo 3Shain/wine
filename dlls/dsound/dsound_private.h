@@ -140,8 +140,7 @@ struct IDirectSoundBufferImpl
     PWAVEFORMATEX               pwfx;
     BufferMemory*               buffer;
     DWORD                       playflags,state,leadin;
-    DWORD                       writelead,buflen;
-    DWORD                       nAvgBytesPerSec;
+    DWORD                       writelead,maxwritelead,buflen;
     DWORD                       freq;
     DSVOLUMEPAN                 volpan;
     DSBUFFERDESC                dsbd;
@@ -165,6 +164,7 @@ struct IDirectSoundBufferImpl
     /* DirectSound3DBuffer fields */
     DS3DBUFFER                  ds3db_ds3db;
     LONG                        ds3db_lVolume;
+    DWORD                       ds3db_freq;
     BOOL                        ds3db_need_recalc;
     /* Used for bit depth conversion */
     int                         mix_channels;

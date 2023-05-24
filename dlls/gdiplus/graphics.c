@@ -3152,14 +3152,10 @@ GpStatus WINGDIPAPI GdipDrawImagePointsRect(GpGraphics *graphics, GpImage *image
             GpRectF graphics_bounds;
             GpRect src_area;
             int i, x, y, src_stride, dst_stride;
-            GpMatrix dst_to_src;
-            REAL m11, m12, m21, m22, mdx, mdy;
             LPBYTE src_data, dst_data, dst_dyn_data=NULL;
             BitmapData lockeddata;
             InterpolationMode interpolation = graphics->interpolation;
             PixelOffsetMode offset_mode = graphics->pixeloffset;
-            GpPointF dst_to_src_points[3] = {{0.0, 0.0}, {1.0, 0.0}, {0.0, 1.0}};
-            REAL x_dx, x_dy, y_dx, y_dy;
             static const GpImageAttributes defaultImageAttributes = {WrapModeClamp, 0, FALSE};
 
             if (!imageAttributes)
@@ -3186,18 +3182,6 @@ GpStatus WINGDIPAPI GdipDrawImagePointsRect(GpGraphics *graphics, GpImage *image
             TRACE("dst_area: %s\n", wine_dbgstr_rect(&dst_area));
 
             if (IsRectEmpty(&dst_area)) return Ok;
-
-            m11 = (ptf[1].X - ptf[0].X) / srcwidth;
-            m21 = (ptf[2].X - ptf[0].X) / srcheight;
-            mdx = ptf[0].X - m11 * srcx - m21 * srcy;
-            m12 = (ptf[1].Y - ptf[0].Y) / srcwidth;
-            m22 = (ptf[2].Y - ptf[0].Y) / srcheight;
-            mdy = ptf[0].Y - m12 * srcx - m22 * srcy;
-
-            GdipSetMatrixElements(&dst_to_src, m11, m12, m21, m22, mdx, mdy);
-
-            stat = GdipInvertMatrix(&dst_to_src);
-            if (stat != Ok) return stat;
 
             if (do_resampling)
             {
@@ -3248,6 +3232,30 @@ GpStatus WINGDIPAPI GdipDrawImagePointsRect(GpGraphics *graphics, GpImage *image
 
             if (do_resampling)
             {
+                GpMatrix dst_to_src;
+                REAL m11, m12, m21, m22, mdx, mdy;
+                REAL x_dx, x_dy, y_dx, y_dy;
+                ARGB *dst_color;
+                GpPointF src_pointf_row, src_pointf;
+
+                m11 = (ptf[1].X - ptf[0].X) / srcwidth;
+                m12 = (ptf[1].Y - ptf[0].Y) / srcwidth;
+                m21 = (ptf[2].X - ptf[0].X) / srcheight;
+                m22 = (ptf[2].Y - ptf[0].Y) / srcheight;
+                mdx = ptf[0].X - m11 * srcx - m21 * srcy;
+                mdy = ptf[0].Y - m12 * srcx - m22 * srcy;
+
+                GdipSetMatrixElements(&dst_to_src, m11, m12, m21, m22, mdx, mdy);
+
+                stat = GdipInvertMatrix(&dst_to_src);
+                if (stat != Ok) return stat;
+
+                dst_stride = sizeof(ARGB) * (dst_area.right - dst_area.left);
+                x_dx = dst_to_src.matrix[0];
+                x_dy = dst_to_src.matrix[1];
+                y_dx = dst_to_src.matrix[2];
+                y_dy = dst_to_src.matrix[3];
+
                 /* Transform the bits as needed to the destination. */
                 dst_data = dst_dyn_data = heap_alloc_zero(sizeof(ARGB) * (dst_area.right - dst_area.left) * (dst_area.bottom - dst_area.top));
                 if (!dst_data)
@@ -3255,33 +3263,26 @@ GpStatus WINGDIPAPI GdipDrawImagePointsRect(GpGraphics *graphics, GpImage *image
                     heap_free(src_data);
                     return OutOfMemory;
                 }
+                dst_color = (ARGB*)(dst_data);
 
-                dst_stride = sizeof(ARGB) * (dst_area.right - dst_area.left);
+                /* Calculate top left point of transformed image.
+                   It would be used as reference point for adding */
+                src_pointf_row.X = dst_to_src.matrix[4] +
+                                   dst_area.left * x_dx + dst_area.top * y_dx;
+                src_pointf_row.Y = dst_to_src.matrix[5] +
+                                   dst_area.left * x_dy + dst_area.top * y_dy;
 
-                GdipTransformMatrixPoints(&dst_to_src, dst_to_src_points, 3);
-
-                x_dx = dst_to_src_points[1].X - dst_to_src_points[0].X;
-                x_dy = dst_to_src_points[1].Y - dst_to_src_points[0].Y;
-                y_dx = dst_to_src_points[2].X - dst_to_src_points[0].X;
-                y_dy = dst_to_src_points[2].Y - dst_to_src_points[0].Y;
-
-                for (x=dst_area.left; x<dst_area.right; x++)
+                for (y = dst_area.top; y < dst_area.bottom;
+                     y++, src_pointf_row.X += y_dx, src_pointf_row.Y += y_dy)
                 {
-                    for (y=dst_area.top; y<dst_area.bottom; y++)
+                    for (x = dst_area.left, src_pointf = src_pointf_row; x < dst_area.right;
+                         x++, src_pointf.X += x_dx, src_pointf.Y += x_dy)
                     {
-                        GpPointF src_pointf;
-                        ARGB *dst_color;
-
-                        src_pointf.X = dst_to_src_points[0].X + x * x_dx + y * y_dx;
-                        src_pointf.Y = dst_to_src_points[0].Y + x * x_dy + y * y_dy;
-
-                        dst_color = (ARGB*)(dst_data + dst_stride * (y - dst_area.top) + sizeof(ARGB) * (x - dst_area.left));
-
-                        if (src_pointf.X >= srcx && src_pointf.X < srcx + srcwidth && src_pointf.Y >= srcy && src_pointf.Y < srcy+srcheight)
+                        if (src_pointf.X >= srcx && src_pointf.X < srcx + srcwidth &&
+                            src_pointf.Y >= srcy && src_pointf.Y < srcy + srcheight)
                             *dst_color = resample_bitmap_pixel(&src_area, src_data, bitmap->width, bitmap->height, &src_pointf,
                                                                imageAttributes, interpolation, offset_mode);
-                        else
-                            *dst_color = 0;
+                        dst_color++;
                     }
                 }
             }
@@ -6887,13 +6888,15 @@ GpStatus get_graphics_transform(GpGraphics *graphics, GpCoordinateSpace dst_spac
 
     if (dst_space != src_space)
     {
-        scale_x = units_to_pixels(1.0, graphics->unit, graphics->xres, graphics->printer_display);
-        scale_y = units_to_pixels(1.0, graphics->unit, graphics->yres, graphics->printer_display);
-
         if(graphics->unit != UnitDisplay)
         {
-            scale_x *= graphics->scale;
-            scale_y *= graphics->scale;
+            scale_x = units_to_pixels(graphics->scale, graphics->unit, graphics->xres, graphics->printer_display);
+            scale_y = units_to_pixels(graphics->scale, graphics->unit, graphics->yres, graphics->printer_display);
+        }
+        else
+        {
+            scale_x = units_to_pixels(1.0, graphics->unit, graphics->xres, graphics->printer_display);
+            scale_y = units_to_pixels(1.0, graphics->unit, graphics->yres, graphics->printer_display);
         }
 
         if (dst_space < src_space)
@@ -6903,12 +6906,11 @@ GpStatus get_graphics_transform(GpGraphics *graphics, GpCoordinateSpace dst_spac
             {
             case WineCoordinateSpaceGdiDevice:
             {
-                GpMatrix gdixform;
-                gdixform = graphics->gdi_transform;
+                GpMatrix gdixform = graphics->gdi_transform;
                 stat = GdipInvertMatrix(&gdixform);
                 if (stat != Ok)
                     break;
-                GdipMultiplyMatrix(matrix, &gdixform, MatrixOrderAppend);
+                memcpy(matrix->matrix, gdixform.matrix, sizeof(matrix->matrix));
                 if (dst_space == CoordinateSpaceDevice)
                     break;
                 /* else fall-through */
@@ -6934,7 +6936,7 @@ GpStatus get_graphics_transform(GpGraphics *graphics, GpCoordinateSpace dst_spac
             switch ((int)src_space)
             {
             case CoordinateSpaceWorld:
-                GdipMultiplyMatrix(matrix, &graphics->worldtrans, MatrixOrderAppend);
+                memcpy(matrix->matrix, &graphics->worldtrans, sizeof(matrix->matrix));
                 if (dst_space == CoordinateSpacePage)
                     break;
                 /* else fall-through */

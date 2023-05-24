@@ -176,14 +176,15 @@ struct d3d9_surface
     IDirect3DDevice9Ex *parent_device;
     IUnknown *container;
     struct d3d9_texture *texture;
+    struct wined3d_swapchain *swapchain;
 };
 
 struct wined3d_rendertarget_view *d3d9_surface_acquire_rendertarget_view(struct d3d9_surface *surface) DECLSPEC_HIDDEN;
+struct d3d9_surface *d3d9_surface_create(struct wined3d_texture *wined3d_texture,
+        unsigned int sub_resource_idx, IUnknown *container) DECLSPEC_HIDDEN;
 struct d3d9_device *d3d9_surface_get_device(const struct d3d9_surface *surface) DECLSPEC_HIDDEN;
 void d3d9_surface_release_rendertarget_view(struct d3d9_surface *surface,
         struct wined3d_rendertarget_view *rtv) DECLSPEC_HIDDEN;
-void surface_init(struct d3d9_surface *surface, struct wined3d_texture *wined3d_texture,
-        unsigned int sub_resource_idx, const struct wined3d_parent_ops **parent_ops) DECLSPEC_HIDDEN;
 struct d3d9_surface *unsafe_impl_from_IDirect3DSurface9(IDirect3DSurface9 *iface) DECLSPEC_HIDDEN;
 
 struct d3d9_vertexbuffer

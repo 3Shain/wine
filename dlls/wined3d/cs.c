@@ -1998,7 +1998,7 @@ static void wined3d_cs_exec_set_light(struct wined3d_cs *cs, const void *data)
 {
     const struct wined3d_cs_set_light *op = data;
     struct wined3d_light_info *light_info;
-    unsigned int light_idx, hash_idx;
+    unsigned int light_idx;
 
     light_idx = op->light.OriginalIndex;
 
@@ -2011,10 +2011,9 @@ static void wined3d_cs_exec_set_light(struct wined3d_cs *cs, const void *data)
             return;
         }
 
-        hash_idx = LIGHTMAP_HASHFUNC(light_idx);
-        list_add_head(&cs->state.light_state.light_map[hash_idx], &light_info->entry);
         light_info->glIndex = -1;
         light_info->OriginalIndex = light_idx;
+        rb_put(&cs->state.light_state.lights_tree, (void *)(ULONG_PTR)light_idx, &light_info->entry);
     }
 
     if (light_info->glIndex != -1)
@@ -2057,8 +2056,7 @@ static void wined3d_cs_exec_set_light_enable(struct wined3d_cs *cs, const void *
     }
 
     prev_idx = light_info->glIndex;
-    wined3d_light_state_enable_light(&cs->state.light_state, &device->adapter->d3d_info, light_info, op->enable);
-    if (light_info->glIndex != prev_idx)
+    if (wined3d_light_state_enable_light(&cs->state.light_state, &device->adapter->d3d_info, light_info, op->enable))
     {
         device_invalidate_state(device, STATE_LIGHT_TYPE);
         device_invalidate_state(device, STATE_ACTIVELIGHT(op->enable ? light_info->glIndex : prev_idx));

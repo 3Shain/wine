@@ -49,8 +49,8 @@
 #include "dsound.h"
 #include "dsound_private.h"
 
-/* default velocity of sound in the air */
-#define DEFAULT_VELOCITY 340
+/* according to the tests, native uses 360 as the speed of sound */
+#define DEFAULT_VELOCITY 360
 
 WINE_DEFAULT_DEBUG_CHANNEL(dsound3d);
 
@@ -167,6 +167,7 @@ void DSOUND_Calc3DBuffer(IDirectSoundBufferImpl *dsb)
 	int i, num_main_speakers;
 	float a, ingain;
 	/* doppler shift related stuff */
+	D3DVALUE flFreq, flBufferVel, flListenerVel;
 
 	TRACE("(%p)\n",dsb);
 
@@ -288,10 +289,8 @@ void DSOUND_Calc3DBuffer(IDirectSoundBufferImpl *dsb)
 	}
 	TRACE("panning: Angle = %f rad, lPan = %ld\n", flAngle, dsb->volpan.lPan);
 
-	/* FIXME: Doppler Effect disabled since i have no idea which frequency to change and how to do it */
-if(0)
-{
-	D3DVALUE flFreq, flBufferVel, flListenerVel;
+	dsb->freq = dsb->ds3db_freq;
+
 	/* doppler shift*/
 	if (!VectorMagnitude(&dsb->ds3db_ds3db.vVelocity) && !VectorMagnitude(&dsb->device->ds3dl.vVelocity))
 	{
@@ -299,7 +298,8 @@ if(0)
 	}
 	else if (!(dsb->ds3db_ds3db.vVelocity.x == dsb->device->ds3dl.vVelocity.x &&
 	           dsb->ds3db_ds3db.vVelocity.y == dsb->device->ds3dl.vVelocity.y &&
-	           dsb->ds3db_ds3db.vVelocity.z == dsb->device->ds3dl.vVelocity.z))
+	           dsb->ds3db_ds3db.vVelocity.z == dsb->device->ds3dl.vVelocity.z) &&
+	         !(vDistance.x == 0.0f && vDistance.y == 0.0f && vDistance.z == 0.0f))
 	{
 		/* calculate length of ds3db_ds3db.vVelocity component which causes Doppler Effect
 		   NOTE: if buffer moves TOWARDS the listener, its velocity component is NEGATIVE
@@ -310,15 +310,13 @@ if(0)
 		         if listener moves AWAY from buffer, its velocity component is NEGATIVE */
 		flListenerVel = ProjectVector(&dsb->device->ds3dl.vVelocity, &vDistance);
 		/* formula taken from Gianicoli D.: Physics, 4th edition: */
-		/* FIXME: replace dsb->freq with appropriate frequency ! */
-		flFreq = dsb->freq * ((DEFAULT_VELOCITY + flListenerVel)/(DEFAULT_VELOCITY + flBufferVel));
+		flFreq = dsb->ds3db_freq * ((DEFAULT_VELOCITY + flListenerVel)/(DEFAULT_VELOCITY + flBufferVel));
 		TRACE("doppler: Buffer velocity (component) = %f, Listener velocity (component) = %f => Doppler shift: %ld Hz -> %f Hz\n",
-		      flBufferVel, flListenerVel, dsb->freq, flFreq);
-		/* FIXME: replace following line with correct frequency setting ! */
+		      flBufferVel, flListenerVel, dsb->ds3db_freq, flFreq);
 		dsb->freq = flFreq;
-		DSOUND_RecalcFormat(dsb);
 	}
-}
+
+	DSOUND_RecalcFormat(dsb);
 
 	for (i = 0; i < dsb->device->pwfx->nChannels; i++)
 		dsb->volpan.dwTotalAmpFactor[i] = 0;
@@ -363,11 +361,13 @@ static void DSOUND_ChangeListener(IDirectSoundBufferImpl *ds3dl)
 	TRACE("(%p)\n",ds3dl);
 	for (i = 0; i < ds3dl->device->nrofbuffers; i++)
 	{
+		AcquireSRWLockExclusive(&ds3dl->device->buffers[i]->lock);
 		/* check if this buffer is waiting for recalculation */
 		if (ds3dl->device->buffers[i]->ds3db_need_recalc)
 		{
 			DSOUND_Mix3DBuffer(ds3dl->device->buffers[i]);
 		}
+		ReleaseSRWLockExclusive(&ds3dl->device->buffers[i]->lock);
 	}
 }
 
@@ -545,6 +545,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetAllParameters(IDirectSound3DBu
 	}
 
 	TRACE("setting: all parameters; dwApply = %ld\n", dwApply);
+
+	AcquireSRWLockExclusive(&This->lock);
+
 	This->ds3db_ds3db = *lpcDs3dBuffer;
 
 	if (dwApply == DS3D_IMMEDIATE)
@@ -553,6 +556,8 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetAllParameters(IDirectSound3DBu
 	}
 	This->ds3db_need_recalc = TRUE;
 	status = DS_OK;
+
+	ReleaseSRWLockExclusive(&This->lock);
 
 	return status;
 }
@@ -564,11 +569,17 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetConeAngles(IDirectSound3DBuffe
 
     TRACE("setting: Inside Cone Angle = %ld; Outside Cone Angle = %ld; dwApply = %ld\n",
             dwInsideConeAngle, dwOutsideConeAngle, dwApply);
+
+    AcquireSRWLockExclusive(&This->lock);
+
     This->ds3db_ds3db.dwInsideConeAngle = dwInsideConeAngle;
     This->ds3db_ds3db.dwOutsideConeAngle = dwOutsideConeAngle;
     if (dwApply == DS3D_IMMEDIATE)
         DSOUND_Mix3DBuffer(This);
     This->ds3db_need_recalc = TRUE;
+
+    ReleaseSRWLockExclusive(&This->lock);
+
     return DS_OK;
 }
 
@@ -578,6 +589,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetConeOrientation(IDirectSound3D
     IDirectSoundBufferImpl *This = impl_from_IDirectSound3DBuffer(iface);
 
     TRACE("setting: Cone Orientation vector = (%f,%f,%f); dwApply = %ld\n", x, y, z, dwApply);
+
+    AcquireSRWLockExclusive(&This->lock);
+
     This->ds3db_ds3db.vConeOrientation.x = x;
     This->ds3db_ds3db.vConeOrientation.y = y;
     This->ds3db_ds3db.vConeOrientation.z = z;
@@ -587,6 +601,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetConeOrientation(IDirectSound3D
         DSOUND_Mix3DBuffer(This);
     }
     This->ds3db_need_recalc = TRUE;
+
+    ReleaseSRWLockExclusive(&This->lock);
+
     return DS_OK;
 }
 
@@ -596,6 +613,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetConeOutsideVolume(IDirectSound
     IDirectSoundBufferImpl *This = impl_from_IDirectSound3DBuffer(iface);
 
     TRACE("setting: ConeOutsideVolume = %ld; dwApply = %ld\n", lConeOutsideVolume, dwApply);
+
+    AcquireSRWLockExclusive(&This->lock);
+
     This->ds3db_ds3db.lConeOutsideVolume = lConeOutsideVolume;
     if (dwApply == DS3D_IMMEDIATE)
     {
@@ -603,6 +623,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetConeOutsideVolume(IDirectSound
         DSOUND_Mix3DBuffer(This);
     }
     This->ds3db_need_recalc = TRUE;
+
+    ReleaseSRWLockExclusive(&This->lock);
+
     return DS_OK;
 }
 
@@ -612,6 +635,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetMaxDistance(IDirectSound3DBuff
     IDirectSoundBufferImpl *This = impl_from_IDirectSound3DBuffer(iface);
 
     TRACE("setting: MaxDistance = %f; dwApply = %ld\n", fMaxDistance, dwApply);
+
+    AcquireSRWLockExclusive(&This->lock);
+
     This->ds3db_ds3db.flMaxDistance = fMaxDistance;
     if (dwApply == DS3D_IMMEDIATE)
     {
@@ -619,6 +645,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetMaxDistance(IDirectSound3DBuff
         DSOUND_Mix3DBuffer(This);
     }
     This->ds3db_need_recalc = TRUE;
+
+    ReleaseSRWLockExclusive(&This->lock);
+
     return DS_OK;
 }
 
@@ -628,6 +657,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetMinDistance(IDirectSound3DBuff
     IDirectSoundBufferImpl *This = impl_from_IDirectSound3DBuffer(iface);
 
     TRACE("setting: MinDistance = %f; dwApply = %ld\n", fMinDistance, dwApply);
+
+    AcquireSRWLockExclusive(&This->lock);
+
     This->ds3db_ds3db.flMinDistance = fMinDistance;
     if (dwApply == DS3D_IMMEDIATE)
     {
@@ -635,6 +667,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetMinDistance(IDirectSound3DBuff
         DSOUND_Mix3DBuffer(This);
     }
     This->ds3db_need_recalc = TRUE;
+
+    ReleaseSRWLockExclusive(&This->lock);
+
     return DS_OK;
 }
 
@@ -644,6 +679,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetMode(IDirectSound3DBuffer *ifa
     IDirectSoundBufferImpl *This = impl_from_IDirectSound3DBuffer(iface);
 
     TRACE("setting: Mode = %ld; dwApply = %ld\n", dwMode, dwApply);
+
+    AcquireSRWLockExclusive(&This->lock);
+
     This->ds3db_ds3db.dwMode = dwMode;
     if (dwApply == DS3D_IMMEDIATE)
     {
@@ -651,6 +689,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetMode(IDirectSound3DBuffer *ifa
         DSOUND_Mix3DBuffer(This);
     }
     This->ds3db_need_recalc = TRUE;
+
+    ReleaseSRWLockExclusive(&This->lock);
+
     return DS_OK;
 }
 
@@ -660,6 +701,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetPosition(IDirectSound3DBuffer 
     IDirectSoundBufferImpl *This = impl_from_IDirectSound3DBuffer(iface);
 
     TRACE("setting: Position vector = (%f,%f,%f); dwApply = %ld\n", x, y, z, dwApply);
+
+    AcquireSRWLockExclusive(&This->lock);
+
     This->ds3db_ds3db.vPosition.x = x;
     This->ds3db_ds3db.vPosition.y = y;
     This->ds3db_ds3db.vPosition.z = z;
@@ -669,6 +713,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetPosition(IDirectSound3DBuffer 
         DSOUND_Mix3DBuffer(This);
     }
     This->ds3db_need_recalc = TRUE;
+
+    ReleaseSRWLockExclusive(&This->lock);
+
     return DS_OK;
 }
 
@@ -678,6 +725,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetVelocity(IDirectSound3DBuffer 
     IDirectSoundBufferImpl *This = impl_from_IDirectSound3DBuffer(iface);
 
     TRACE("setting: Velocity vector = (%f,%f,%f); dwApply = %ld\n", x, y, z, dwApply);
+
+    AcquireSRWLockExclusive(&This->lock);
+
     This->ds3db_ds3db.vVelocity.x = x;
     This->ds3db_ds3db.vVelocity.y = y;
     This->ds3db_ds3db.vVelocity.z = z;
@@ -687,6 +737,9 @@ static HRESULT WINAPI IDirectSound3DBufferImpl_SetVelocity(IDirectSound3DBuffer 
         DSOUND_Mix3DBuffer(This);
     }
     This->ds3db_need_recalc = TRUE;
+
+    ReleaseSRWLockExclusive(&This->lock);
+
     return DS_OK;
 }
 

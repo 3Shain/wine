@@ -264,7 +264,6 @@ static HRESULT WINAPI IDirectSoundBufferImpl_SetFrequency(IDirectSoundBuffer8 *i
 {
         IDirectSoundBufferImpl *This = impl_from_IDirectSoundBuffer8(iface);
 	DWORD oldFreq;
-	void *newcommitted;
 
 	TRACE("(%p,%ld)\n",This,freq);
 
@@ -288,20 +287,16 @@ static HRESULT WINAPI IDirectSoundBufferImpl_SetFrequency(IDirectSoundBuffer8 *i
 
 	AcquireSRWLockExclusive(&This->lock);
 
-	oldFreq = This->freq;
-	This->freq = freq;
-	if (freq != oldFreq) {
-		This->freqAdjustNum = This->freq;
-		This->freqAdjustDen = This->device->pwfx->nSamplesPerSec;
-		This->nAvgBytesPerSec = freq * This->pwfx->nBlockAlign;
-		DSOUND_RecalcFormat(This);
-
-		newcommitted = realloc(This->committedbuff, This->writelead);
-		if(!newcommitted) {
-			ReleaseSRWLockExclusive(&This->lock);
-			return DSERR_OUTOFMEMORY;
-		}
-		This->committedbuff = newcommitted;
+	if (This->dsbd.dwFlags & DSBCAPS_CTRL3D) {
+		oldFreq = This->ds3db_freq;
+		This->ds3db_freq = freq;
+		if (freq != oldFreq)
+			DSOUND_Calc3DBuffer(This);
+	} else {
+		oldFreq = This->freq;
+		This->freq = freq;
+		if (freq != oldFreq)
+			DSOUND_RecalcFormat(This);
 	}
 
 	ReleaseSRWLockExclusive(&This->lock);
@@ -712,7 +707,7 @@ static HRESULT WINAPI IDirectSoundBufferImpl_GetFrequency(IDirectSoundBuffer8 *i
 		return DSERR_INVALIDPARAM;
 	}
 
-	*freq = This->freq;
+	*freq = (This->dsbd.dwFlags & DSBCAPS_CTRL3D) ? This->ds3db_freq : This->freq;
 	TRACE("-> %ld\n", *freq);
 
 	return DS_OK;
@@ -1112,20 +1107,6 @@ HRESULT secondarybuffer_create(DirectSoundDevice *device, const DSBUFFERDESC *ds
 	dsb->sec_mixpos = 0;
 	dsb->state = STATE_STOPPED;
 
-	dsb->freqAdjustNum = dsb->freq;
-	dsb->freqAdjustDen = device->pwfx->nSamplesPerSec;
-	dsb->nAvgBytesPerSec = dsb->freq *
-		dsbd->lpwfxFormat->nBlockAlign;
-
-	/* calculate fragment size and write lead */
-	DSOUND_RecalcFormat(dsb);
-
-	dsb->committedbuff = malloc(dsb->writelead);
-	if(!dsb->committedbuff) {
-		IDirectSoundBuffer8_Release(&dsb->IDirectSoundBuffer8_iface);
-		return DSERR_OUTOFMEMORY;
-	}
-
 	if (dsb->dsbd.dwFlags & DSBCAPS_CTRL3D) {
 		dsb->ds3db_ds3db.dwSize = sizeof(DS3DBUFFER);
 		dsb->ds3db_ds3db.vPosition.x = 0.0;
@@ -1144,10 +1125,22 @@ HRESULT secondarybuffer_create(DirectSoundDevice *device, const DSBUFFERDESC *ds
 		dsb->ds3db_ds3db.flMaxDistance = DS3D_DEFAULTMAXDISTANCE;
 		dsb->ds3db_ds3db.dwMode = DS3DMODE_NORMAL;
 
+		dsb->ds3db_freq = dsbd->lpwfxFormat->nSamplesPerSec;
+
 		dsb->ds3db_need_recalc = FALSE;
 		DSOUND_Calc3DBuffer(dsb);
-	} else
+	} else {
 		DSOUND_RecalcVolPan(&(dsb->volpan));
+
+		/* calculate fragment size and write lead */
+		DSOUND_RecalcFormat(dsb);
+	}
+
+	dsb->committedbuff = malloc(dsb->maxwritelead);
+	if(!dsb->committedbuff) {
+		IDirectSoundBuffer8_Release(&dsb->IDirectSoundBuffer8_iface);
+		return DSERR_OUTOFMEMORY;
+	}
 
         InitializeSRWLock(&dsb->lock);
 
@@ -1224,7 +1217,7 @@ HRESULT IDirectSoundBufferImpl_Duplicate(
         return DSERR_OUTOFMEMORY;
     }
 
-    committedbuff = malloc(pdsb->writelead);
+    committedbuff = malloc(pdsb->maxwritelead);
     if (committedbuff == NULL) {
         free(dsb);
         *ppdsb = NULL;

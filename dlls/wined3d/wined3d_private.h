@@ -1311,6 +1311,7 @@ struct wined3d_shader_semantic
     enum wined3d_decl_usage usage;
     UINT usage_idx;
     enum wined3d_shader_resource_type resource_type;
+    unsigned int sample_count;
     enum wined3d_data_type resource_data_type;
     struct wined3d_shader_dst_param reg;
 };
@@ -2990,7 +2991,9 @@ struct wined3d_light_info
     float exponent;
     float cutoff;
 
-    struct list entry;
+    struct rb_entry entry;
+    struct list changed_entry;
+    bool changed;
 };
 
 /* The default light parameters */
@@ -3877,13 +3880,9 @@ struct wined3d_rasterizer_state
     struct wine_rb_entry entry;
 };
 
-#define LIGHTMAP_SIZE 43
-#define LIGHTMAP_HASHFUNC(x) ((x) % LIGHTMAP_SIZE)
-
 struct wined3d_light_state
 {
-    /* Light hashmap. Collisions are handled using linked lists. */
-    struct list light_map[LIGHTMAP_SIZE];
+    struct rb_tree lights_tree;
     const struct wined3d_light_info *lights[WINED3D_MAX_ACTIVE_LIGHTS];
 };
 
@@ -5015,6 +5014,8 @@ struct wined3d_saved_states
     DWORD lights : 1;
     DWORD transforms : 1;
     DWORD padding : 1;
+
+    struct list changed_lights;
 };
 
 struct StageState {
@@ -5048,7 +5049,7 @@ void wined3d_stateblock_state_init(struct wined3d_stateblock_state *state,
         const struct wined3d_device *device, uint32_t flags) DECLSPEC_HIDDEN;
 void wined3d_stateblock_state_cleanup(struct wined3d_stateblock_state *state) DECLSPEC_HIDDEN;
 
-void wined3d_light_state_enable_light(struct wined3d_light_state *state, const struct wined3d_d3d_info *d3d_info,
+bool wined3d_light_state_enable_light(struct wined3d_light_state *state, const struct wined3d_d3d_info *d3d_info,
         struct wined3d_light_info *light_info, BOOL enable) DECLSPEC_HIDDEN;
 struct wined3d_light_info *wined3d_light_state_get_light(const struct wined3d_light_state *state,
         unsigned int idx) DECLSPEC_HIDDEN;
