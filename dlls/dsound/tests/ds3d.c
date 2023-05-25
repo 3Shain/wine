@@ -1441,6 +1441,17 @@ static void test_doppler(GUID *guid, BOOL play)
 
     check_doppler(dsound, listener, play, DS3DMODE_NORMAL, 0, 0, 0, -90, 22050, 22050);
 
+    /* The Doppler shift does not depend on the frame of reference. */
+    check_doppler(dsound, listener, play, DS3DMODE_NORMAL, 0, 90, 1, 0, 22050, 29400);
+    check_doppler(dsound, listener, play, DS3DMODE_NORMAL, 0, -90, 1, 0, 22050, 17640);
+
+    /* The Doppler shift is limited to +-0.5 speed of sound. */
+    check_doppler(dsound, listener, play, DS3DMODE_NORMAL, 0, 0, 1, -240, 22050, 44100);
+    check_doppler(dsound, listener, play, DS3DMODE_NORMAL, 0, 0, 1, 240, 22050, 14700);
+
+    /* The shifted frequency is limited to DSBFREQUENCY_MAX. */
+    check_doppler(dsound, listener, play, DS3DMODE_NORMAL, 0, 0, 1, -90, 176400, 200000);
+
     IDirectSound3DListener_Release(listener);
     ref = IDirectSoundBuffer_Release(primary);
     ok(!ref, "Got outstanding refcount %ld.\n", ref);
