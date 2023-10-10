@@ -34,6 +34,9 @@
 #include "macdrv.h"
 #include "shellapi.h"
 #include "wine/server.h"
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
+#include "winreg.h"
+#endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(macdrv);
 
@@ -614,6 +617,9 @@ static NTSTATUS macdrv_quit_result(void *arg)
     return 0;
 }
 
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
+NTSTATUS macdrv_setup_functions(void *arg);
+#endif
 
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
@@ -625,6 +631,9 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     macdrv_init,
     macdrv_notify_icon,
     macdrv_quit_result,
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
+    macdrv_setup_functions,
+#endif
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
@@ -726,8 +735,90 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     wow64_init,
     wow64_notify_icon,
     macdrv_quit_result,
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
+    macdrv_setup_functions,
+#endif
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );
 
 #endif /* _WIN64 */
+
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
+struct macdrv_functions_t
+{
+    void (*macdrv_init_display_devices)(BOOL);
+    struct macdrv_win_data*(*get_win_data)(HWND hwnd);
+    void (*release_win_data)(struct macdrv_win_data *data);
+    macdrv_window(*macdrv_get_cocoa_window)(HWND hwnd, BOOL require_on_screen);
+    macdrv_metal_device (*macdrv_create_metal_device)(void);
+    void (*macdrv_release_metal_device)(macdrv_metal_device d);
+    macdrv_metal_view (*macdrv_view_create_metal_view)(macdrv_view v, macdrv_metal_device d);
+    macdrv_metal_layer (*macdrv_view_get_metal_layer)(macdrv_metal_view v);
+    void (*macdrv_view_release_metal_view)(macdrv_metal_view v);
+    void (*on_main_thread)(dispatch_block_t b);
+    LSTATUS(WINAPI*RegQueryValueExA)(HKEY, LPCSTR, LPDWORD, LPDWORD, BYTE*, LPDWORD);
+    LSTATUS(WINAPI*RegSetValueExA)(HKEY, LPCSTR, DWORD, DWORD, const BYTE*, DWORD);
+    LSTATUS(WINAPI*RegOpenKeyExA)(HKEY, LPCSTR, DWORD, DWORD, HKEY*);
+    LSTATUS(WINAPI*RegCreateKeyExA)(HKEY, LPCSTR, DWORD, LPSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, HKEY*, LPDWORD);
+    LSTATUS(WINAPI*RegCloseKey)(HKEY);
+    BOOL(WINAPI*EnumDisplayMonitors)(HDC,LPRECT,MONITORENUMPROC,LPARAM);
+    BOOL(WINAPI*GetMonitorInfoA)(HMONITOR,LPMONITORINFO);
+    BOOL(WINAPI*AdjustWindowRectEx)(LPRECT,DWORD,BOOL,DWORD);
+    LONG_PTR(WINAPI*GetWindowLongPtrW)(HWND,int);
+    BOOL(WINAPI*GetWindowRect)(HWND,LPRECT);
+    BOOL(WINAPI*MoveWindow)(HWND,int,int,int,int,BOOL);
+    BOOL(WINAPI*SetWindowPos)(HWND,HWND,int,int,int,int,UINT);
+    INT(WINAPI*GetSystemMetrics)(INT);
+    LONG_PTR(WINAPI*SetWindowLongPtrW)(HWND,INT,LONG_PTR);
+};
+
+void OnMainThread(dispatch_block_t);
+
+struct macdrv_functions_t macdrv_functions = {
+    &macdrv_init_display_devices,
+    &get_win_data,
+    &release_win_data,
+    &macdrv_get_cocoa_window,
+    &macdrv_create_metal_device,
+    &macdrv_release_metal_device,
+    &macdrv_view_create_metal_view,
+    &macdrv_view_get_metal_layer,
+    &macdrv_view_release_metal_view,
+    &OnMainThread,
+    // &RegQueryValueExA,
+    (void*)0,
+    // &RegSetValueExA,
+    (void*)0,
+    // &RegOpenKeyExA,
+    (void*)0,
+    // &RegCreateKeyExA,
+    (void*)0,
+    // &RegCloseKey,
+    (void*)0,
+    // &NtUserEnumDisplayMonitors,
+    (void*)0,
+    // &GetMonitorInfoA,
+    (void*)0,
+    // &AdjustWindowRectEx,
+    (void*)0,
+    // &GetWindowLongPtrW,
+    (void*)0,
+    // &GetWindowRect,
+    (void*)0,
+    // &MoveWindow,
+    (void*)0,
+    // &SetWindowPos,
+    (void*)0,
+    // &GetSystemMetrics,
+    (void*)0,
+    // &SetWindowLongPtrW,
+    (void*)0,
+};
+
+NTSTATUS macdrv_setup_functions(void *arg) {
+    memcpy(&macdrv_functions.RegQueryValueExA, arg, sizeof(struct macdrv_functions_t) - 10 * sizeof(void*));
+    return STATUS_SUCCESS;
+}
+
+#endif
