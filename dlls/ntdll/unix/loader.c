@@ -1176,6 +1176,46 @@ NTSTATUS ntdll_init_syscalls( SYSTEM_SERVICE_TABLE *table, void **dispatcher )
     return STATUS_SUCCESS;
 }
 
+#if defined(__APPLE__) && defined(__x86_64__)
+static void* non_native_support_lib;
+static void (*register_non_native_code_region) (void*, void*);
+static bool (*supports_non_native_code_regions) (void);
+static void init_non_native_support(void)
+{
+    register_non_native_code_region = NULL;
+    register_non_native_code_region = NULL;
+    non_native_support_lib = dlopen("@rpath/libd3dshared.dylib", RTLD_LOCAL);
+    if (non_native_support_lib)
+    {
+        register_non_native_code_region = dlsym(non_native_support_lib, "register_non_native_code_region");
+        supports_non_native_code_regions = dlsym(non_native_support_lib, "supports_non_native_code_regions");
+    }
+}
+
+static NTSTATUS pe_module_loaded(void* args)
+{
+    struct pe_module_loaded_params *params = args;
+    if ((supports_non_native_code_regions && supports_non_native_code_regions()))
+    {
+        TRACE("Marking non_native_code_region: %p, %p", &params->start, &params->end);
+        register_non_native_code_region(&params->start, &params->end);
+    }
+    return STATUS_SUCCESS;
+}
+// static BOOL CDECL gs_patching_needed(void)
+// {
+//     return (supports_non_native_code_regions && supports_non_native_code_regions() == false);
+// }
+#elif defined(__x86_64__)
+static void CDECL pe_module_loaded(void* start, void* end)
+{
+    return STATUS_SUCCESS;
+}
+// static BOOL CDECL gs_patching_needed(void)
+// {
+//     return false;
+// }
+#endif
 
 /***********************************************************************
  *           load_so_dll
@@ -1223,6 +1263,10 @@ static const unixlib_entry_t unix_call_funcs[] =
     unixcall_wine_server_handle_to_fd,
     unixcall_wine_spawnvp,
     system_time_precise,
+#if defined(__x86_64__)
+    pe_module_loaded,
+    // gs_patching_needed,
+#endif
 };
 
 
@@ -2004,7 +2048,11 @@ static void start_main_thread(void)
     init_thread_stack( teb, 0, 0, 0 );
     NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
     load_ntdll();
-    if (main_image_info.Machine != current_machine) load_wow64_ntdll( main_image_info.Machine );
+    if (main_image_info.Machine != current_machine) {
+        load_wow64_ntdll( main_image_info.Machine );
+    } else {
+        init_non_native_support();
+    }
     load_apiset_dll();
     ntdll_init_syscalls( &syscall_table, p__wine_syscall_dispatcher );
     server_init_process_done();

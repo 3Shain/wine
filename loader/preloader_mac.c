@@ -339,6 +339,7 @@ void *wld_munmap( void *start, size_t len );
 SYSCALL_FUNC( wld_munmap, 73 /* SYS_munmap */ );
 
 static intptr_t (*p_dyld_get_image_slide)( const struct target_mach_header* mh );
+static void (*p_dyld_make_delayed_module_initializer_calls)(void);
 
 #define MAKE_FUNCPTR(f) static typeof(f) * p##f
 MAKE_FUNCPTR(dlopen);
@@ -714,6 +715,7 @@ void *wld_start( void *stack, int *is_unix_thread )
     LOAD_POSIX_DYLD_FUNC( dlopen );
     LOAD_POSIX_DYLD_FUNC( dlsym );
     LOAD_POSIX_DYLD_FUNC( dladdr );
+    LOAD_MACHO_DYLD_FUNC( _dyld_make_delayed_module_initializer_calls );
     LOAD_MACHO_DYLD_FUNC( _dyld_get_image_slide );
 
     /* reserve memory that Wine needs */

@@ -378,6 +378,11 @@ static const kernel_callback kernel_callbacks[] =
 
 C_ASSERT(NtUserDriverCallbackFirst + ARRAYSIZE(kernel_callbacks) == client_func_last);
 
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
+
+#include "winreg.h"
+
+#endif
 
 static BOOL process_attach(void)
 {
@@ -405,6 +410,18 @@ static BOOL process_attach(void)
 
     if (__wine_init_unix_call()) return FALSE;
 
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
+  void* functions[] = {
+    &RegQueryValueExA,  &RegSetValueExA,
+    &RegOpenKeyExA,     &RegCreateKeyExA,
+    &RegCloseKey,       &NtUserEnumDisplayMonitors,
+    &GetMonitorInfoA,   &AdjustWindowRectEx,
+    &GetWindowLongPtrW, &GetWindowRect,
+    &MoveWindow,        &SetWindowPos,
+    &GetSystemMetrics,  &SetWindowLongPtrW
+  };
+  MACDRV_CALL(setup_functions, &functions[0]);
+#endif
     for (str = strings; str->id; str++)
         str->len = LoadStringW(macdrv_module, str->id, (WCHAR *)&str->str, 0);
     params.strings = strings;

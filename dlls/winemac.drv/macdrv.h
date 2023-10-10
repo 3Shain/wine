@@ -282,6 +282,7 @@ extern NTSTATUS macdrv_dnd_have_format(void *arg) DECLSPEC_HIDDEN;
 extern NTSTATUS macdrv_dnd_release(void *arg) DECLSPEC_HIDDEN;
 extern NTSTATUS macdrv_dnd_retain(void *arg) DECLSPEC_HIDDEN;
 extern NTSTATUS macdrv_notify_icon(void *arg) DECLSPEC_HIDDEN;
+extern NTSTATUS macdrv_setup_functions(void *arg) DECLSPEC_HIDDEN;
 
 extern NTSTATUS macdrv_client_func(enum macdrv_client_funcs func, const void *params,
                                    ULONG size) DECLSPEC_HIDDEN;

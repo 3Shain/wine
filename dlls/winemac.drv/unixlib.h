@@ -29,6 +29,9 @@ enum macdrv_funcs
     unix_init,
     unix_notify_icon,
     unix_quit_result,
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
+    unix_setup_functions,
+#endif
     unix_funcs_count
 };
 
