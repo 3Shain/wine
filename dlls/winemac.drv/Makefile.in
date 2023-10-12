@@ -1,7 +1,7 @@
 MODULE    = winemac.drv
 UNIXLIB   = winemac.so
 IMPORTS   = uuid rpcrt4 user32 gdi32 win32u
-DELAYIMPORTS = ole32 shell32 imm32
+DELAYIMPORTS = advapi32 ole32 shell32 imm32
 UNIX_LIBS    = \
 	-lwin32u \
 	-framework AppKit \
@@ -30,6 +30,7 @@ SOURCES = \
 	dragdrop.c \
 	event.c \
 	gdi.c \
+    gpt.c \
 	image.c \
 	keyboard.c \
 	macdrv_main.c \
