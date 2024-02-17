@@ -719,25 +719,25 @@ LONG WINAPI UnhandledExceptionFilter( EXCEPTION_POINTERS *epointers )
         }
     }
 
-    if (!NtCurrentTeb()->Peb->BeingDebugged)
-    {
-        if (rec->ExceptionCode == CONTROL_C_EXIT)
-        {
-            /* do not launch the debugger on ^C, simply terminate the process */
-            TerminateProcess( GetCurrentProcess(), 1 );
-        }
+    // if (!NtCurrentTeb()->Peb->BeingDebugged)
+    // {
+    //     if (rec->ExceptionCode == CONTROL_C_EXIT)
+    //     {
+    //         /* do not launch the debugger on ^C, simply terminate the process */
+    //         TerminateProcess( GetCurrentProcess(), 1 );
+    //     }
 
-        if (top_filter)
-        {
-            LONG ret = top_filter( epointers );
-            if (ret != EXCEPTION_CONTINUE_SEARCH) return ret;
-        }
+    //     if (top_filter)
+    //     {
+    //         LONG ret = top_filter( epointers );
+    //         if (ret != EXCEPTION_CONTINUE_SEARCH) return ret;
+    //     }
 
-        /* FIXME: Should check the current error mode */
+    //     /* FIXME: Should check the current error mode */
 
-        if (!start_debugger_atomic( epointers ) || !NtCurrentTeb()->Peb->BeingDebugged)
-            return EXCEPTION_EXECUTE_HANDLER;
-    }
+    //     if (!start_debugger_atomic( epointers ) || !NtCurrentTeb()->Peb->BeingDebugged)
+    //         return EXCEPTION_EXECUTE_HANDLER;
+    // }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 

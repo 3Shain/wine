@@ -708,8 +708,8 @@ NTSTATUS WINAPI DbgUiConvertStateChangeStructure( DBGUI_WAIT_STATE_CHANGE *state
 void WINAPI DbgUiRemoteBreakin( void *arg )
 {
     TRACE( "\n" );
-    if (NtCurrentTeb()->Peb->BeingDebugged)
-    {
+    // if (NtCurrentTeb()->Peb->BeingDebugged)
+    // {
         __TRY
         {
             DbgBreakPoint();
@@ -719,7 +719,7 @@ void WINAPI DbgUiRemoteBreakin( void *arg )
             /* do nothing */
         }
         __ENDTRY
-    }
+    // }
     RtlExitUserThread( STATUS_SUCCESS );
 }
 

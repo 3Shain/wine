@@ -1491,7 +1491,7 @@ NTSTATUS send_debug_event( EXCEPTION_RECORD *rec, CONTEXT *context, BOOL first_c
     select_op_t select_op;
     sigset_t old_set;
 
-    if (!peb->BeingDebugged) return 0;  /* no debugger present */
+    // if (!peb->BeingDebugged) return 0;  /* no debugger present */
 
     pthread_sigmask( SIG_BLOCK, &server_block_set, &old_set );
 
@@ -2311,6 +2311,13 @@ NTSTATUS WINAPI NtSetInformationThread( HANDLE handle, THREADINFOCLASS class,
 
     case ThreadHideFromDebugger:
         if (length) return STATUS_INFO_LENGTH_MISMATCH;
+        if (getenv("BYPASS_ANTIDEBUG")) {
+            if (handle == (HANDLE)-2) {
+                ERR("ThreadHideFromDebugger: thread hid itself\n");
+            } else {
+                ERR("ThreadHideFromDebugger: %p\n", handle);
+            }
+        }
         SERVER_START_REQ( set_thread_info )
         {
             req->handle = wine_server_obj_handle( handle );

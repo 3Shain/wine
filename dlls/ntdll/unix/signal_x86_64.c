@@ -1747,6 +1747,29 @@ static inline BOOL handle_cet_nop( ucontext_t *sigcontext, CONTEXT *context )
             RIP_sig(sigcontext) += prefix_count + 3; // FIXME: it might be longer
             TRACE_(seh)( "skipped multi-byte NOP instruction at %016lx\n", (BYTE *)context->Rip );
             return TRUE;
+        case 0x0B: {
+            /* Simulate CWD (0x66 0x99) */
+            if((RAX_sig(sigcontext) & 0x8000) != 0) {
+                RDX_sig(sigcontext) = (RDX_sig(sigcontext) & 0xFFFFFFFFFFFF0000) + 0xFFFF;
+            } else {
+                RDX_sig(sigcontext) = RDX_sig(sigcontext) & 0xFFFFFFFFFFFF0000;
+            }
+            RIP_sig(sigcontext) += prefix_count + 2;
+            TRACE_(seh)( "Simulate cwd at %016lx\n", (BYTE *)context->Rip );
+            return TRUE;
+        }
+        case 0x08: /* invd */ 
+        {
+            /* Simulate CQ0 (0x48 0x99) */
+            if((RAX_sig(sigcontext) & 0x8000000000000000) != 0) {
+                RDX_sig(sigcontext) = 0xFFFFFFFFFFFFFFFF;
+            } else {
+                RDX_sig(sigcontext) = 0x0000000000000000;
+            }
+            RIP_sig(sigcontext) += prefix_count + 2;
+            TRACE_(seh)( "Simulate cqo at %016lx\n", (BYTE *)context->Rip );
+            return TRUE;
+        }
         }
         break;
     default:
@@ -1805,7 +1828,7 @@ static inline DWORD is_privileged_instr( CONTEXT *context )
         switch (instr[i + 1])
         {
         case 0x06: /* clts */
-        case 0x08: /* invd */
+        case 0x08: /* invd */ 
         case 0x09: /* wbinvd */
         case 0x20: /* mov crX, reg */
         case 0x21: /* mov drX, reg */
@@ -2008,6 +2031,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     case TRAP_x86_SEGNPFLT:  /* Segment not present exception */
     case TRAP_x86_PROTFLT:   /* General protection fault */
         {
+            if (handle_cet_nop( ucontext, &context.c )) return;
             WORD err = ERROR_sig(ucontext);
             if (!err && (rec.ExceptionCode = is_privileged_instr( &context.c ))) break;
             if ((err & 7) == 2 && handle_interrupt( ucontext, &rec, &context )) return;

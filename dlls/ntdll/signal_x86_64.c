@@ -1582,10 +1582,8 @@ __ASM_GLOBAL_FUNC( RtlRaiseException,
                    "movl $1,%r8d\n\t"
                    "movq %gs:(0x30),%rax\n\t"   /* Teb */
                    "movq 0x60(%rax),%rax\n\t"   /* Peb */
-                   "cmpb $0,0x02(%rax)\n\t"     /* BeingDebugged */
-                   "jne 1f\n\t"
                    "call " __ASM_NAME("dispatch_exception") "\n"
-                   "1:\tcall " __ASM_NAME("NtRaiseException") "\n\t"
+                   "call " __ASM_NAME("NtRaiseException") "\n\t"
                    "movq %rax,%rcx\n\t"
                    "call " __ASM_NAME("RtlRaiseStatus") /* does not return */ );
 

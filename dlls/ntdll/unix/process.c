@@ -1305,6 +1305,11 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
         if (!info) ret = STATUS_ACCESS_VIOLATION;
         else
         {
+            if (getenv("BYPASS_ANTIDEBUG")) {
+                ERR("ProcessDebugPort: reporting no debug port\n");
+                *(DWORD_PTR *)info = 0;
+                return STATUS_SUCCESS;
+            }
             HANDLE debug;
 
             SERVER_START_REQ(get_process_debug_info)
@@ -1337,6 +1342,12 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
             {
                 HANDLE debug;
 
+                if (getenv("BYPASS_ANTIDEBUG")) {
+                    ERR("ProcessDebugFlags: reporting zero\n");
+                    *(HANDLE *)info = 0;
+                    return STATUS_SUCCESS;
+                }
+
                 SERVER_START_REQ(get_process_debug_info)
                 {
                     req->handle = wine_server_obj_handle( handle );
@@ -1361,6 +1372,11 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
     case ProcessDebugObjectHandle:
         len = sizeof(HANDLE);
         if (size != len) return STATUS_INFO_LENGTH_MISMATCH;
+        if (getenv("BYPASS_ANTIDEBUG")) {
+            ERR("ProcessDebugObjectHandle: reporting STATUS_PORT_NOT_SET\n");
+            *(HANDLE *)info = NULL;
+            return STATUS_PORT_NOT_SET;
+        }
         SERVER_START_REQ(get_process_debug_info)
         {
             req->handle = wine_server_obj_handle( handle );
