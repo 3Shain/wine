@@ -203,8 +203,8 @@ struct macdrv_win_data
     struct window_surface *unminimized_surface;
 };
 
-extern struct macdrv_win_data *get_win_data(HWND hwnd);
-extern void release_win_data(struct macdrv_win_data *data);
+extern struct macdrv_win_data *get_win_data(HWND hwnd) __attribute__((visibility("default")));
+extern void release_win_data(struct macdrv_win_data *data) __attribute__((visibility("default")));
 extern void init_win_context(void);
 extern macdrv_window macdrv_get_cocoa_window(HWND hwnd, BOOL require_on_screen);
 extern RGNDATA *get_region_data(HRGN hrgn, HDC hdc_lptodp);
@@ -216,6 +216,9 @@ extern void set_surface_use_alpha(struct window_surface *window_surface, BOOL us
 extern void surface_clip_to_visible_rect(struct window_surface *window_surface, const RECT *visible_rect);
 
 extern void macdrv_handle_event(const macdrv_event *event);
+
+extern macdrv_view macdrv_get_cocoa_view(HWND hwnd) __attribute__((visibility("default")));
+extern macdrv_view macdrv_get_client_cocoa_view(HWND hwnd) __attribute__((visibility("default")));
 
 extern void macdrv_window_close_requested(HWND hwnd);
 extern void macdrv_window_frame_changed(HWND hwnd, const macdrv_event *event);
