@@ -23,6 +23,7 @@
 #include "macdrv_dll.h"
 #include "macdrv_res.h"
 #include "shellapi.h"
+#include "winreg.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(macdrv);
@@ -368,6 +369,73 @@ cleanup:
     return NtCallbackReturn(entries, count * sizeof(entries[0]), 0);
 }
 
+static NTSTATUS WINAPI macdrv_regcreateopenkeyexa(void *arg, ULONG size)
+{
+    struct regcreateopenkeyexa_params *params = arg;
+    LONG result;
+
+    TRACE("()\n");
+
+    if (params->create)
+    {
+        result = RegCreateKeyExA(UlongToHandle(params->hkey),
+                                 param_ptr(params->name),
+                                 params->reserved,
+                                 param_ptr(params->class),
+                                 params->options,
+                                 params->access,
+                                 param_ptr(params->security),
+                                 param_ptr(params->retkey),
+                                 param_ptr(params->disposition));
+    }
+    else
+    {
+        result = RegOpenKeyExA(UlongToHandle(params->hkey),
+                               param_ptr(params->name),
+                               params->options,
+                               params->access,
+                               param_ptr(params->retkey));
+    }
+    *(LONG *)param_ptr(params->result) = result;
+    return 0;
+}
+
+static NTSTATUS WINAPI macdrv_regqueryvalueexa(void *arg, ULONG size)
+{
+    struct regqueryvalueexa_params *params = arg;
+    LONG result;
+
+    TRACE("()\n");
+
+    result = RegQueryValueExA(UlongToHandle(params->hkey),
+                              param_ptr(params->name),
+                              param_ptr(params->reserved),
+                              param_ptr(params->type),
+                              param_ptr(params->data),
+                              param_ptr(params->count));
+
+    *(LONG *)param_ptr(params->result) = result;
+    return 0;
+}
+
+static NTSTATUS WINAPI macdrv_regsetvalueexa(void *arg, ULONG size)
+{
+    struct regsetvalueexa_params *params = arg;
+    LONG result;
+
+    TRACE("()\n");
+
+    result = RegSetValueExA(UlongToHandle(params->hkey),
+                            param_ptr(params->name),
+                            params->reserved,
+                            params->type,
+                            param_ptr(params->data),
+                            params->count);
+
+    *(LONG *)param_ptr(params->result) = result;
+    return 0;
+}
+
 static const KERNEL_CALLBACK_PROC kernel_callbacks[] =
 {
     macdrv_app_icon,
@@ -375,6 +443,9 @@ static const KERNEL_CALLBACK_PROC kernel_callbacks[] =
     macdrv_dnd_query_drag,
     macdrv_dnd_query_drop,
     macdrv_dnd_query_exited,
+    macdrv_regcreateopenkeyexa,
+    macdrv_regqueryvalueexa,
+    macdrv_regsetvalueexa,
 };
 
 C_ASSERT(NtUserDriverCallbackFirst + ARRAYSIZE(kernel_callbacks) == client_func_last);
